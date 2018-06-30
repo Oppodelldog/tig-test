@@ -9,55 +9,65 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+
+	"github.com/Oppodelldog/tig-test/ccount"
 )
 
 func main() {
 
-	s, err := startServer()
+	s, r, err := startServer()
 	if err != nil {
 		panic(err)
 	}
 
-	end := time.NewTimer(time.Second * 600)
+	end := time.NewTimer(time.Second * 2)
 	ticker := time.NewTicker(time.Millisecond * 100)
+	tickerIncreaseConnections := time.NewTicker(time.Second * 10)
+	tickerResetConnections := time.NewTicker(time.Second * 60)
+	minConcurrentConnections := 1
 	isRunning := true
 	for isRunning {
 		select {
+		case <-tickerResetConnections.C:
+			minConcurrentConnections = 1
+		case <-tickerIncreaseConnections.C:
+			minConcurrentConnections += rand.Intn(10+1) + 1
 		case <-ticker.C:
-			resp, err := http.Get("http://localhost:10012/")
-			if err != nil {
-				logrus.Error(err)
+
+			for i := 0; i < rand.Intn(10+minConcurrentConnections)+minConcurrentConnections; i++ {
+				go makeRequest()
 			}
-			fmt.Println(resp.StatusCode)
-			resp.Body.Close()
 
 		case <-end.C:
 			isRunning = false
 		}
 	}
 
+	r.UnregisterAll()
 	stopServer(s)
 
 }
 
+func makeRequest() {
+	resp, err := http.Get("http://localhost:10012/")
+	if err != nil {
+		logrus.Error(err)
+	}
+	fmt.Println(resp.StatusCode)
+	resp.Body.Close()
+}
+
 func stopServer(s *http.Server) {
-	ctx := context.Background()
+	ctx,_ := context.WithTimeout(context.Background(), time.Second*30)
 	err := s.Shutdown(ctx)
 	if err != nil {
 		panic(err)
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		}
 	}
 }
 
 func startMonitoring() metrics.Registry {
 
 	r := metrics.NewRegistry()
-
 	go influxdb.InfluxDB(
 		r,
 		time.Second*3,
@@ -70,7 +80,7 @@ func startMonitoring() metrics.Registry {
 	return r
 }
 
-func startServer() (*http.Server, error) {
+func startServer() (*http.Server, metrics.Registry, error) {
 
 	metricsRegistry := startMonitoring()
 	serverMux := http.NewServeMux()
@@ -95,8 +105,8 @@ func startServer() (*http.Server, error) {
 		panic(err)
 	}
 
-	counter := metrics.NewCounter()
-	err = metricsRegistry.Register("api-method-1234-counter", counter)
+	counter := ccount.NewConcurrentCounter()
+	err = metricsRegistry.Register("api-method-1234-concurrent", counter)
 	if err != nil {
 		panic(err)
 	}
@@ -116,5 +126,5 @@ func startServer() (*http.Server, error) {
 
 	go s.ListenAndServe()
 
-	return s, err
+	return s, metricsRegistry, err
 }
